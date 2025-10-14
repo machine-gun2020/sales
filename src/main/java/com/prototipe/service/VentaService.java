@@ -7,6 +7,8 @@ import com.prototipe.repository.*;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
+import jakarta.ws.rs.core.Response;
+
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -145,20 +147,58 @@ public class VentaService {
     }
 
     @Transactional
-    public void cancelarVenta(Long idVenta) {
-        Venta venta = ventaRepository.findById(idVenta);
-        if (venta != null) {
-            venta.estado = "CANCELADA";
+    public Response cancelarVenta(Long idVenta) {
+        try {
+            Venta venta = ventaRepository.findById(idVenta);
+            if (venta == null) {
+                return Response.status(Response.Status.NOT_FOUND)
+                        .entity("Venta no encontrada").build();
+            }
 
-            // ✅ REINTEGRAR INVENTARIO al cancelar venta
+            // Validar que la venta no esté ya cancelada
+            if ("CANCELADA".equals(venta.estado)) {
+                return Response.status(Response.Status.BAD_REQUEST)
+                        .entity("La venta ya está cancelada").build();
+            }
+
+            System.out.println("=== CANCELANDO VENTA ID: " + idVenta + " ===");
+
+            // ✅ 1. REINTEGRAR INVENTARIO
             for (DetalleVenta detalle : venta.detalles) {
                 if (detalle.producto != null) {
-                    detalle.producto.existencia += detalle.cantidad;
-                    System.out.println("Inventario reintegrado - Producto: " + detalle.producto.nombre +
-                            ", Nueva existencia: " + detalle.producto.existencia);
+                    // Obtener el producto actualizado de la base de datos
+                    Producto producto = productoRepository.findById(detalle.producto.idProducto);
+                    if (producto != null) {
+                        int cantidadAnterior = producto.existencia;
+                        producto.existencia += detalle.cantidad;
+
+                        System.out.println("Inventario reintegrado - Producto: " + producto.nombre +
+                                ", Anterior: " + cantidadAnterior +
+                                ", Nuevo: " + producto.existencia);
+
+                        // ✅ Persistir el cambio en el producto
+                        productoRepository.persist(producto);
+                    }
                 }
             }
+
+            // ✅ 2. CREAR REGISTRO DE DEVOLUCIÓN (opcional pero recomendado)
+            crearDevolucionPorCancelacion(venta);
+
+            // ✅ 3. ACTUALIZAR ESTADO DE LA VENTA
+            venta.estado = "CANCELADA";
+            ventaRepository.persist(venta);
+
+            System.out.println("=== VENTA CANCELADA EXITOSAMENTE ===");
+            return Response.ok().entity("Cancelación exitosa - Inventario reintegrado").build();
+
+        } catch (Exception e) {
+            System.err.println("=== ERROR AL CANCELAR VENTA ===");
+            e.printStackTrace();
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                    .entity("Error al cancelar venta: " + e.getMessage()).build();
         }
+
     }
 
     /**
@@ -170,6 +210,28 @@ public class VentaService {
             return true;
         } catch (Exception e) {
             return false;
+        }
+    }
+
+    private void crearDevolucionPorCancelacion(Venta venta) {
+        try {
+            Devolucion devolucion = new Devolucion();
+            devolucion.folioDevolucion = "DEV-CANC-" + venta.folio;
+            devolucion.fechaDevolucion = LocalDateTime.now();
+            devolucion.venta = venta;
+            devolucion.cliente = venta.cliente;
+            devolucion.totalDevolucion = venta.total;
+            devolucion.estado = "PROCESADA";
+            devolucion.motivoGeneral = "Cancelación de venta";
+
+            // ✅ Persistir la devolución
+            devolucion.persist();
+
+            System.out.println("Devolución creada: " + devolucion.folioDevolucion);
+
+        } catch (Exception e) {
+            System.err.println("Error al crear devolución por cancelación: " + e.getMessage());
+            // No lanzar excepción para no interrumpir la cancelación
         }
     }
 }
