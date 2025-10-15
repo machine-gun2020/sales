@@ -1,20 +1,21 @@
 package com.prototipe.service;
 
-
-
+import com.prototipe.exceptions.*;
+import com.prototipe.utils.*;
 import com.prototipe.model.*;
 import com.prototipe.repository.*;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
-import jakarta.ws.rs.core.Response;
-
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.logging.Logger;
 
 @ApplicationScoped
 public class VentaService {
+
+    private static final Logger LOG = Logger.getLogger(VentaService.class.getName());
 
     @Inject
     VentaRepository ventaRepository;
@@ -28,12 +29,27 @@ public class VentaService {
     @Transactional
     public Venta crearVenta(Venta venta) {
         try {
-            System.out.println("=== INICIANDO CREACIÓN DE VENTA ===");
+            LOG.info("🛒 Iniciando creación de venta - Cliente ID: " +
+                    (venta.cliente != null ? venta.cliente.idCliente : "null"));
+
+            // Validaciones básicas usando nuestras nuevas utilidades
+            ValidationUtils.validarNoNulo(venta, "venta");
+            ValidationUtils.validarNoNulo(venta.cliente, "cliente");
+            ValidationUtils.validarNoNulo(venta.detalles, "detalles");
+
+            if (venta.detalles.isEmpty()) {
+                throw new VentaException("La venta debe tener al menos un producto", "VENTA_003");
+            }
 
             // Validar cliente
             Cliente cliente = clienteRepository.findById(venta.cliente.idCliente);
             if (cliente == null) {
-                throw new RuntimeException("Cliente no encontrado");
+                throw new ClienteException("Cliente no encontrado", venta.cliente.idCliente);
+            }
+
+            // Validar que el cliente esté activo
+            if (!"S".equals(cliente.activo)) {
+                throw new ClienteException("Cliente inactivo", cliente.idCliente);
             }
 
             venta.cliente = cliente;
@@ -43,22 +59,48 @@ public class VentaService {
                 venta.fechaVenta = LocalDateTime.now();
             }
 
-            // ✅ VALIDAR INVENTARIO ANTES de procesar la venta
-            validarInventario(venta.detalles);
+            LOG.info("📋 Procesando " + venta.detalles.size() + " detalles de venta");
 
-            // ✅ PRIMERO: Establecer relaciones en detalles ANTES de persistir
+            // ✅ PRIMERO: Validar todo el inventario ANTES de hacer cambios
             for (DetalleVenta detalle : venta.detalles) {
+                ValidationUtils.validarNoNulo(detalle.producto, "producto en detalle");
+                ValidationUtils.validarPositivo(detalle.cantidad, "cantidad");
+
                 Producto producto = productoRepository.findById(detalle.producto.idProducto);
                 if (producto == null) {
-                    throw new RuntimeException("Producto no encontrado: " + detalle.producto.idProducto);
+                    throw new VentaException(
+                            "Producto no encontrado: " + detalle.producto.idProducto,
+                            "VENTA_004"
+                    );
                 }
-                detalle.producto = producto;
-                detalle.venta = venta; // ✅ CRÍTICO: Establecer relación bidireccional
 
-                // ✅ ACTUALIZAR INVENTARIO - Reducir existencia
+                // Usar nuestra nueva utilidad de validación de stock
+                BusinessRules.validarStockSuficiente(producto, detalle.cantidad);
+
+                // Validar precio
+                if (detalle.precioUnitario != null) {
+                    BusinessRules.validarPrecioPositivo(detalle.precioUnitario);
+                }
+            }
+
+            // ✅ SEGUNDO: Si toda la validación pasa, procesar la venta
+            for (DetalleVenta detalle : venta.detalles) {
+                Producto producto = productoRepository.findById(detalle.producto.idProducto);
+                detalle.producto = producto;
+                detalle.venta = venta; // ✅ Establecer relación bidireccional
+
+                // Usar precio del producto si no se especificó
+                if (detalle.precioUnitario == null) {
+                    detalle.precioUnitario = producto.precioVenta;
+                }
+
+                // Calcular importe
+                detalle.importe = detalle.precioUnitario.multiply(BigDecimal.valueOf(detalle.cantidad));
+
+                // ✅ REDUCIR INVENTARIO (ya validado que hay stock suficiente)
                 producto.existencia -= detalle.cantidad;
-                System.out.println("Inventario actualizado - Producto: " + producto.nombre +
-                        ", Nueva existencia: " + producto.existencia);
+                LOG.info("📦 Inventario actualizado - " + producto.nombre +
+                        ": " + (producto.existencia + detalle.cantidad) + " → " + producto.existencia);
             }
 
             // Calcular totales
@@ -69,46 +111,25 @@ public class VentaService {
                 venta.folio = generarFolioVenta();
             }
 
-            System.out.println("Persistiendo venta con " + venta.detalles.size() + " detalles...");
+            // Validar folio único
+            if (ventaRepository.findByFolio(venta.folio).isPresent()) {
+                throw new VentaException("El folio ya existe: " + venta.folio, "VENTA_005");
+            }
+
+            LOG.info("💾 Persistiendo venta - Folio: " + venta.folio + ", Total: " + venta.total);
             ventaRepository.persist(venta);
 
-            System.out.println("=== VENTA CREADA EXITOSAMENTE ===");
+            LOG.info("✅ Venta creada exitosamente - ID: " + venta.idVenta + ", Folio: " + venta.folio);
             return venta;
 
+        } catch (VentaException | InventarioException | ClienteException | ValidationException e) {
+            // Relanzar excepciones de negocio específicas
+            LOG.severe("❌ Error de negocio en venta: " + e.getMessage());
+            throw e;
         } catch (Exception e) {
-            System.err.println("=== ERROR EN CREAR VENTA ===");
-            e.printStackTrace();
-            throw new RuntimeException("Error al crear venta: " + e.getMessage(), e);
-        }
-    }
-
-    /**
-     * ✅ VALIDA que haya suficiente inventario para todos los productos
-     */
-    private void validarInventario(List<DetalleVenta> detalles) {
-        for (DetalleVenta detalle : detalles) {
-            Producto producto = productoRepository.findById(detalle.producto.idProducto);
-            if (producto == null) {
-                throw new RuntimeException("Producto no encontrado: " + detalle.producto.idProducto);
-            }
-
-            if (producto.existencia < detalle.cantidad) {
-                throw new RuntimeException(
-                        "Inventario insuficiente para: " + producto.nombre +
-                                ". Existencia: " + producto.existencia +
-                                ", Solicitado: " + detalle.cantidad
-                );
-            }
-
-            if (producto.existencia <= 0) {
-                throw new RuntimeException(
-                        "Producto agotado: " + producto.nombre
-                );
-            }
-
-            System.out.println("Inventario validado - Producto: " + producto.nombre +
-                    ", Existencia: " + producto.existencia +
-                    ", Solicitado: " + detalle.cantidad);
+            // Capturar cualquier otra excepción y convertirla a VentaException
+            LOG.severe("💥 Error inesperado al crear venta: " + e.getMessage());
+            throw new VentaException("Error interno al procesar la venta: " + e.getMessage(), "VENTA_999");
         }
     }
 
@@ -116,8 +137,10 @@ public class VentaService {
         BigDecimal subtotal = BigDecimal.ZERO;
 
         for (DetalleVenta detalle : venta.detalles) {
-            // ✅ Ya tenemos el producto asignado, solo calcular importe
-            detalle.importe = detalle.precioUnitario.multiply(BigDecimal.valueOf(detalle.cantidad));
+            // Asegurar que el importe esté calculado
+            if (detalle.importe == null) {
+                detalle.importe = detalle.precioUnitario.multiply(BigDecimal.valueOf(detalle.cantidad));
+            }
             subtotal = subtotal.add(detalle.importe);
         }
 
@@ -125,8 +148,7 @@ public class VentaService {
         venta.iva = subtotal.multiply(BigDecimal.valueOf(0.16)); // 16% IVA
         venta.total = subtotal.add(venta.iva);
 
-        System.out.println("Totales calculados - Subtotal: " + venta.subtotal +
-                ", IVA: " + venta.iva + ", Total: " + venta.total);
+        LOG.fine("💰 Totales calculados - Subtotal: " + subtotal + ", Total: " + venta.total);
     }
 
     private String generarFolioVenta() {
@@ -143,95 +165,52 @@ public class VentaService {
     }
 
     public Venta obtenerVentaPorId(Long id) {
-        return ventaRepository.findById(id);
+        ValidationUtils.validarNoNulo(id, "idVenta");
+        Venta venta = ventaRepository.findById(id);
+        if (venta == null) {
+            throw new VentaException("Venta no encontrada: " + id, "VENTA_002");
+        }
+        return venta;
     }
 
     @Transactional
-    public Response cancelarVenta(Long idVenta) {
+    public void cancelarVenta(Long idVenta) {
         try {
+            ValidationUtils.validarNoNulo(idVenta, "idVenta");
             Venta venta = ventaRepository.findById(idVenta);
+
             if (venta == null) {
-                return Response.status(Response.Status.NOT_FOUND)
-                        .entity("Venta no encontrada").build();
+                throw new VentaException("Venta no encontrada: " + idVenta, "VENTA_002");
             }
 
-            // Validar que la venta no esté ya cancelada
             if ("CANCELADA".equals(venta.estado)) {
-                return Response.status(Response.Status.BAD_REQUEST)
-                        .entity("La venta ya está cancelada").build();
+                throw new VentaException("La venta ya está cancelada", "VENTA_006");
             }
 
-            System.out.println("=== CANCELANDO VENTA ID: " + idVenta + " ===");
+            LOG.info("🔄 Cancelando venta - ID: " + idVenta + ", Folio: " + venta.folio);
 
-            // ✅ 1. REINTEGRAR INVENTARIO
+            // Reintegrar inventario
             for (DetalleVenta detalle : venta.detalles) {
                 if (detalle.producto != null) {
-                    // Obtener el producto actualizado de la base de datos
                     Producto producto = productoRepository.findById(detalle.producto.idProducto);
                     if (producto != null) {
-                        int cantidadAnterior = producto.existencia;
+                        int existenciaAnterior = producto.existencia;
                         producto.existencia += detalle.cantidad;
-
-                        System.out.println("Inventario reintegrado - Producto: " + producto.nombre +
-                                ", Anterior: " + cantidadAnterior +
-                                ", Nuevo: " + producto.existencia);
-
-                        // ✅ Persistir el cambio en el producto
-                        productoRepository.persist(producto);
+                        LOG.info("📦 Inventario reintegrado - " + producto.nombre +
+                                ": " + existenciaAnterior + " → " + producto.existencia);
                     }
                 }
             }
 
-            // ✅ 2. CREAR REGISTRO DE DEVOLUCIÓN (opcional pero recomendado)
-            crearDevolucionPorCancelacion(venta);
-
-            // ✅ 3. ACTUALIZAR ESTADO DE LA VENTA
             venta.estado = "CANCELADA";
-            ventaRepository.persist(venta);
+            LOG.info("✅ Venta cancelada - ID: " + idVenta);
 
-            System.out.println("=== VENTA CANCELADA EXITOSAMENTE ===");
-            return Response.ok().entity("Cancelación exitosa - Inventario reintegrado").build();
-
+        } catch (VentaException e) {
+            LOG.severe("❌ Error al cancelar venta: " + e.getMessage());
+            throw e;
         } catch (Exception e) {
-            System.err.println("=== ERROR AL CANCELAR VENTA ===");
-            e.printStackTrace();
-            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
-                    .entity("Error al cancelar venta: " + e.getMessage()).build();
-        }
-
-    }
-
-    /**
-     * ✅ MÉTODO ADICIONAL: Validar inventario sin realizar venta
-     */
-    public boolean validarDisponibilidad(List<DetalleVenta> detalles) {
-        try {
-            validarInventario(detalles);
-            return true;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private void crearDevolucionPorCancelacion(Venta venta) {
-        try {
-            Devolucion devolucion = new Devolucion();
-            devolucion.folioDevolucion = "DEV-CANC-" + venta.folio;
-            devolucion.fechaDevolucion = LocalDateTime.now();
-            devolucion.venta = venta;
-            devolucion.cliente = venta.cliente;
-            devolucion.totalDevolucion = venta.total;
-            devolucion.estado = "PROCESADA";
-            devolucion.motivoGeneral = "Cancelación de venta";
-
-            // ✅ Persistir la devolución
-            devolucion.persist();
-
-            System.out.println("Devolución creada: " + devolucion.folioDevolucion);
-
-        } catch (Exception e) {
-            System.err.println("Error al crear devolución por cancelación: " + e.getMessage());
-            // No lanzar excepción para no interrumpir la cancelación
+            LOG.severe("💥 Error inesperado al cancelar venta: " + e.getMessage());
+            throw new VentaException("Error interno al cancelar venta", "VENTA_007");
         }
     }
 }
