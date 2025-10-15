@@ -1,5 +1,6 @@
 package com.prototipe.controller;
 
+import com.prototipe.dto.VentaResponse;
 import com.prototipe.exceptions.*;
 import com.prototipe.model.Venta;
 import com.prototipe.service.VentaService;
@@ -9,6 +10,7 @@ import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import java.util.List;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
 
 @Path("/ventas")
 @Produces(MediaType.APPLICATION_JSON)
@@ -25,7 +27,13 @@ public class VentaResource {
         try {
             LOG.fine("📋 Solicitando listado de todas las ventas");
             List<Venta> ventas = ventaService.obtenerTodasVentas();
-            return Response.ok(ventas).build();
+
+            // ✅ USAR DTOs para evitar recursión
+            List<VentaResponse> ventasResponse = ventas.stream()
+                    .map(VentaResponse::fromVenta)
+                    .collect(Collectors.toList());
+
+            return Response.ok(ventasResponse).build();
         } catch (Exception e) {
             LOG.severe("❌ Error al obtener ventas: " + e.getMessage());
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
