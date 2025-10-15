@@ -1,136 +1,163 @@
 package com.prototipe.controller;
 
-
-import com.prototipe.model.DetalleVenta;
-import com.prototipe.model.Devolucion;
-import com.prototipe.model.Producto;
+import com.prototipe.exceptions.*;
 import com.prototipe.model.Venta;
-import com.prototipe.repository.ProductoRepository;
 import com.prototipe.service.VentaService;
-import io.quarkus.hibernate.orm.panache.PanacheRepository;
 import jakarta.inject.Inject;
-import jakarta.transaction.Transactional;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
-
-import java.time.LocalDateTime;
 import java.util.List;
+import java.util.logging.Logger;
 
 @Path("/ventas")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 public class VentaResource {
 
+    private static final Logger LOG = Logger.getLogger(VentaResource.class.getName());
+
     @Inject
     VentaService ventaService;
 
-    @Inject
-    ProductoRepository productoRepository;
-
     @GET
-    public List<Venta> obtenerTodasVentas() {
-        return ventaService.obtenerTodasVentas();
+    public Response obtenerTodasVentas() {
+        try {
+            LOG.fine("📋 Solicitando listado de todas las ventas");
+            List<Venta> ventas = ventaService.obtenerTodasVentas();
+            return Response.ok(ventas).build();
+        } catch (Exception e) {
+            LOG.severe("❌ Error al obtener ventas: " + e.getMessage());
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                    .entity(crearErrorResponse("Error interno al obtener ventas", "VENTAS_001"))
+                    .build();
+        }
     }
 
     @GET
     @Path("/{id}")
     public Response obtenerVenta(@PathParam("id") Long id) {
-        Venta venta = ventaService.obtenerVentaPorId(id);
-        if (venta == null) {
-            return Response.status(Response.Status.NOT_FOUND).build();
+        try {
+            LOG.info("🔍 Buscando venta con ID: " + id);
+            Venta venta = ventaService.obtenerVentaPorId(id);
+            return Response.ok(venta).build();
+        } catch (VentaException e) {
+            LOG.warning("⚠️ Venta no encontrada - ID: " + id + " - " + e.getMessage());
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity(crearErrorResponse(e.getMessage(), e.getCodigoError()))
+                    .build();
+        } catch (Exception e) {
+            LOG.severe("💥 Error inesperado al obtener venta: " + e.getMessage());
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                    .entity(crearErrorResponse("Error interno al obtener venta", "VENTAS_002"))
+                    .build();
         }
-        return Response.ok(venta).build();
     }
 
     @POST
     public Response crearVenta(Venta venta) {
         try {
+            LOG.info("🛒 Creando nueva venta");
             Venta nuevaVenta = ventaService.crearVenta(venta);
-            return Response.status(Response.Status.CREATED).entity(nuevaVenta).build();
-        } catch (Exception e) {
+
+            LOG.info("✅ Venta creada exitosamente - ID: " + nuevaVenta.idVenta);
+            return Response.status(Response.Status.CREATED)
+                    .entity(crearSuccessResponse("Venta creada exitosamente", nuevaVenta))
+                    .build();
+
+        } catch (InventarioException e) {
+            LOG.warning("📦 Error de inventario: " + e.getMessage());
             return Response.status(Response.Status.BAD_REQUEST)
-                    .entity("Error al crear venta: " + e.getMessage()).build();
+                    .entity(crearErrorResponse(
+                            String.format("Stock insuficiente: %s (Solicitado: %d, Existencia: %d)",
+                                    e.getProductoNombre(), e.getCantidadSolicitada(), e.getExistenciaActual()),
+                            "INVENTARIO_001"
+                    ))
+                    .build();
+        } catch (ClienteException e) {
+            LOG.warning("👥 Error de cliente: " + e.getMessage());
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(crearErrorResponse(e.getMessage(), "CLIENTE_001"))
+                    .build();
+        } catch (ValidationException e) {
+            LOG.warning("⚡ Error de validación: " + e.getMessage());
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(crearErrorResponse(
+                            String.format("Campo inválido: %s (Valor: %s)", e.getCampo(), e.getValor()),
+                            "VALIDACION_001"
+                    ))
+                    .build();
+        } catch (VentaException e) {
+            LOG.warning("💰 Error de venta: " + e.getMessage());
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(crearErrorResponse(e.getMessage(), e.getCodigoError()))
+                    .build();
+        } catch (Exception e) {
+            LOG.severe("💥 Error inesperado al crear venta: " + e.getMessage());
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                    .entity(crearErrorResponse("Error interno al procesar la venta", "VENTAS_003"))
+                    .build();
         }
     }
 
     @PUT
     @Path("/{id}/cancelar")
-    @Transactional
     public Response cancelarVenta(@PathParam("id") Long id) {
         try {
-            Venta venta = ventaService.obtenerVentaPorId(id);
-            if (venta == null) {
-                return Response.status(Response.Status.NOT_FOUND)
-                        .entity("Venta no encontrada").build();
-            }
+            LOG.info("🔄 Solicitando cancelación de venta - ID: " + id);
+            ventaService.cancelarVenta(id);
 
-            // ✅ Validar que la venta no esté ya cancelada
-            if ("CANCELADA".equals(venta.estado)) {
-                return Response.status(Response.Status.BAD_REQUEST)
-                        .entity("La venta ya está cancelada").build();
-            }
+            LOG.info("✅ Venta cancelada exitosamente - ID: " + id);
+            return Response.ok()
+                    .entity(crearSuccessResponse("Venta cancelada exitosamente - Inventario reintegrado", null))
+                    .build();
 
-            System.out.println("=== CANCELANDO VENTA ID: " + id + " ===");
-
-            // ✅ 1. REINTEGRAR INVENTARIO
-            for (DetalleVenta detalle : venta.detalles) {
-                if (detalle.producto != null) {
-                    Producto producto = productoRepository.findById(detalle.producto.idProducto);
-                    if (producto != null) {
-                        int cantidadAnterior = producto.existencia;
-                        producto.existencia += detalle.cantidad;
-
-                        System.out.println("Inventario reintegrado - Producto: " + producto.nombre +
-                                ", Anterior: " + cantidadAnterior +
-                                ", Nuevo: " + producto.existencia);
-                    }
-                }
-            }
-
-            // ✅ 2. ACTUALIZAR ESTADO DE LA VENTA
-            venta.estado = "CANCELADA";
-
-            // ✅ 3. CREAR DEVOLUCIÓN (opcional)
-            crearDevolucionPorCancelacion(venta);
-
-            System.out.println("=== VENTA CANCELADA EXITOSAMENTE ===");
-            return Response.ok().entity("Cancelación exitosa - Inventario reintegrado").build();
-
+        } catch (VentaException e) {
+            LOG.warning("⚠️ Error al cancelar venta: " + e.getMessage());
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(crearErrorResponse(e.getMessage(), e.getCodigoError()))
+                    .build();
         } catch (Exception e) {
-            System.err.println("=== ERROR AL CANCELAR VENTA ===");
-            e.printStackTrace();
+            LOG.severe("💥 Error inesperado al cancelar venta: " + e.getMessage());
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
-                    .entity("Error al cancelar venta: " + e.getMessage()).build();
+                    .entity(crearErrorResponse("Error interno al cancelar venta", "VENTAS_004"))
+                    .build();
         }
     }
 
-    private void crearDevolucionPorCancelacion(Venta venta) {
-        try {
-            Devolucion devolucion = new Devolucion();
+    // Métodos auxiliares para respuestas consistentes
+    private Object crearErrorResponse(String mensaje, String codigoError) {
+        return new ErrorResponse(mensaje, codigoError);
+    }
 
-            // ✅ FOLIO MÁS CORTO que cumpla con 20 caracteres máximo
-            String timestamp = String.valueOf(System.currentTimeMillis());
-            String folioCorto = "DC-" + venta.folio + "-" + timestamp.substring(timestamp.length() - 4);
+    private Object crearSuccessResponse(String mensaje, Object data) {
+        return new SuccessResponse(mensaje, data);
+    }
 
-            // ✅ Asegurar que no exceda 20 caracteres
-            if (folioCorto.length() > 20) {
-                folioCorto = folioCorto.substring(0, 20);
-            }
+    // Clases internas para respuestas estructuradas
+    public static class ErrorResponse {
+        public final String mensaje;
+        public final String codigoError;
+        public final String tipo = "error";
+        public final long timestamp;
 
-            devolucion.folioDevolucion = folioCorto;
-            devolucion.fechaDevolucion = LocalDateTime.now();
-            devolucion.venta = venta;
-            devolucion.cliente = venta.cliente;
-            devolucion.totalDevolucion = venta.total;
-            devolucion.estado = "PROCESADA";
-            devolucion.motivoGeneral = "Cancelación de venta";
+        public ErrorResponse(String mensaje, String codigoError) {
+            this.mensaje = mensaje;
+            this.codigoError = codigoError;
+            this.timestamp = System.currentTimeMillis();
+        }
+    }
 
-            devolucion.persist();
-            System.out.println("Devolución creada: " + devolucion.folioDevolucion);
+    public static class SuccessResponse {
+        public final String mensaje;
+        public final Object data;
+        public final String tipo = "success";
+        public final long timestamp;
 
-        } catch (Exception e) {
-            System.err.println("Error al crear devolución por cancelación: " + e.getMessage());
+        public SuccessResponse(String mensaje, Object data) {
+            this.mensaje = mensaje;
+            this.data = data;
+            this.timestamp = System.currentTimeMillis();
         }
     }
 }
