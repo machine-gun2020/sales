@@ -1,6 +1,7 @@
 package com.prototipe.model;
 
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
 import java.math.BigDecimal;
@@ -18,10 +19,12 @@ public class DetalleVenta extends PanacheEntityBase {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "ID_VENTA", nullable = false)
+    @JsonIgnore
     public Venta venta;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "ID_PRODUCTO", nullable = false)
+    @JsonIgnore
     public Producto producto;
 
     @Column(name = "CANTIDAD", nullable = false)

@@ -1,6 +1,7 @@
 package com.prototipe.model;
 
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
 import java.math.BigDecimal;
@@ -43,11 +44,14 @@ public class Venta extends PanacheEntityBase {
 
     // ✅ Inicializar las listas
     @OneToMany(mappedBy = "venta", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    @JsonIgnore
     public List<DetalleVenta> detalles = new ArrayList<>();
 
     @OneToMany(mappedBy = "venta", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    @JsonIgnore
     public List<PagoVenta> pagos;
 
     @OneToMany(mappedBy = "venta", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    @JsonIgnore
     public List<Devolucion> devoluciones;
 }
