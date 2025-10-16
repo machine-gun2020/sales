@@ -42,8 +42,8 @@ public class DetalleDevolucion extends PanacheEntityBase {
     @Column(name = "TIPO_MOTIVO", length = 50)
     public String tipoMotivo;
 
-    @Column(name = "REINGRESAR_INVENTARIO", length = 1)
-    public String reingresarInventario = "S";
+    @Column(name = "REINGRESAR_INVENTARIO")
+    public Boolean reingresarInventario = true;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "ID_PRODUCTO_CAMBIO")
