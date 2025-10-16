@@ -40,38 +40,47 @@ public class ProductoService {
     }
 
     @Transactional
-    public Producto crearProducto(Producto producto) {
+    public Producto crearProducto(Producto productoRequest) {
         try {
             LOG.info("🆕 Creando nuevo producto");
 
             // Validaciones básicas
-            ValidationUtils.validarNoNulo(producto, "producto");
-            ValidationUtils.validarTextoNoVacio(producto.codigo, "codigo");
-            ValidationUtils.validarTextoNoVacio(producto.nombre, "nombre");
-            BusinessRules.validarPrecioPositivo(producto.precioVenta);
+            ValidationUtils.validarNoNulo(productoRequest, "producto");
+            ValidationUtils.validarTextoNoVacio(productoRequest.codigo, "codigo");
+            ValidationUtils.validarTextoNoVacio(productoRequest.nombre, "nombre");
+            BusinessRules.validarPrecioPositivo(productoRequest.precioVenta);
 
             // Validar código único
-            if (productoRepository.findByCodigo(producto.codigo).isPresent()) {
+            if (productoRepository.findByCodigo(productoRequest.codigo).isPresent()) {
                 throw new ValidationException(
                         "El código de producto ya existe",
                         "codigo",
-                        producto.codigo
+                        productoRequest.codigo
                 );
             }
 
             // Validar existencia no negativa
-            if (producto.existencia < 0) {
+            if (productoRequest.existencia < 0) {
                 throw new ValidationException(
                         "La existencia no puede ser negativa",
                         "existencia",
-                        String.valueOf(producto.existencia)
+                        String.valueOf(productoRequest.existencia)
                 );
             }
 
-            // Establecer valores por defecto
-            if (producto.activo == null) {
-                producto.activo = "S";
-            }
+            // ✅ SOLUCIÓN: Crear NUEVA instancia en lugar de usar la recibida
+            Producto producto = new Producto();
+            producto.codigo = productoRequest.codigo;
+            producto.nombre = productoRequest.nombre;
+            producto.descripcion = productoRequest.descripcion;
+            producto.precioVenta = productoRequest.precioVenta;
+            producto.costo = productoRequest.costo;
+            producto.existencia = productoRequest.existencia != null ? productoRequest.existencia : 0;
+            producto.categoria = productoRequest.categoria;
+            producto.activo = productoRequest.activo != null ? productoRequest.activo : "S";
+
+            // ✅ Asegurar que el ID sea null para nueva entidad
+            producto.idProducto = null;
 
             productoRepository.persist(producto);
             LOG.info("✅ Producto creado - ID: " + producto.idProducto + ", Código: " + producto.codigo);
@@ -83,7 +92,7 @@ public class ProductoService {
             throw e;
         } catch (Exception e) {
             LOG.severe("💥 Error inesperado al crear producto: " + e.getMessage());
-            throw new VentaException("Error interno al crear producto", "PROD_001");
+            throw new VentaException("Error interno al crear producto: " + e.getMessage(), "PROD_001");
         }
     }
 
