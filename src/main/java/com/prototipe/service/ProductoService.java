@@ -1,5 +1,6 @@
 package com.prototipe.service;
 
+import com.prototipe.dto.ProductoCreateDTO;
 import com.prototipe.exceptions.*;
 import com.prototipe.utils.*;
 import com.prototipe.model.Producto;
@@ -40,46 +41,40 @@ public class ProductoService {
     }
 
     @Transactional
-    public Producto crearProducto(Producto productoRequest) {
+    public Producto crearProducto(ProductoCreateDTO productoDTO) {
         try {
-            LOG.info("🆕 Creando nuevo producto");
+            LOG.info("🆕 Creando nuevo producto desde DTO");
 
             // Validaciones básicas
-            ValidationUtils.validarNoNulo(productoRequest, "producto");
-            ValidationUtils.validarTextoNoVacio(productoRequest.codigo, "codigo");
-            ValidationUtils.validarTextoNoVacio(productoRequest.nombre, "nombre");
-            BusinessRules.validarPrecioPositivo(productoRequest.precioVenta);
+            ValidationUtils.validarNoNulo(productoDTO, "productoDTO");
+            ValidationUtils.validarTextoNoVacio(productoDTO.codigo, "codigo");
+            ValidationUtils.validarTextoNoVacio(productoDTO.nombre, "nombre");
+
+            if (productoDTO.precioVenta != null) {
+                BusinessRules.validarPrecioPositivo(productoDTO.precioVenta);
+            }
 
             // Validar código único
-            if (productoRepository.findByCodigo(productoRequest.codigo).isPresent()) {
+            if (productoRepository.findByCodigo(productoDTO.codigo).isPresent()) {
                 throw new ValidationException(
                         "El código de producto ya existe",
                         "codigo",
-                        productoRequest.codigo
+                        productoDTO.codigo
                 );
             }
 
-            // Validar existencia no negativa
-            if (productoRequest.existencia < 0) {
-                throw new ValidationException(
-                        "La existencia no puede ser negativa",
-                        "existencia",
-                        String.valueOf(productoRequest.existencia)
-                );
-            }
-
-            // ✅ SOLUCIÓN: Crear NUEVA instancia en lugar de usar la recibida
+            // ✅ CREAR NUEVA INSTANCIA
             Producto producto = new Producto();
-            producto.codigo = productoRequest.codigo;
-            producto.nombre = productoRequest.nombre;
-            producto.descripcion = productoRequest.descripcion;
-            producto.precioVenta = productoRequest.precioVenta;
-            producto.costo = productoRequest.costo;
-            producto.existencia = productoRequest.existencia != null ? productoRequest.existencia : 0;
-            producto.categoria = productoRequest.categoria;
-            producto.activo = productoRequest.activo != null ? productoRequest.activo : "S";
+            producto.codigo = productoDTO.codigo;
+            producto.nombre = productoDTO.nombre;
+            producto.descripcion = productoDTO.descripcion;
+            producto.precioVenta = productoDTO.precioVenta;
+            producto.costo = productoDTO.costo;
+            producto.existencia = productoDTO.existencia != null ? productoDTO.existencia : 0;
+            producto.categoria = productoDTO.categoria;
+            producto.activo = productoDTO.activo != null ? productoDTO.activo : "S";
 
-            // ✅ Asegurar que el ID sea null para nueva entidad
+            // ✅ Asegurar que sea una nueva entidad
             producto.idProducto = null;
 
             productoRepository.persist(producto);

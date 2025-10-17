@@ -1,5 +1,6 @@
 package com.prototipe.service;
 
+import com.prototipe.dto.VentaCreateDTO;
 import com.prototipe.exceptions.*;
 import com.prototipe.utils.*;
 import com.prototipe.model.*;
@@ -27,107 +28,93 @@ public class VentaService {
     ProductoRepository productoRepository;
 
     @Transactional
-    public Venta crearVenta(Venta venta) {
+    public Venta crearVenta(VentaCreateDTO ventaDTO) {
         try {
-            LOG.info("🛒 Iniciando creación de venta - Cliente ID: " +
-                    (venta.cliente != null ? venta.cliente.idCliente : "null"));
+            LOG.info("🛒 Iniciando creación de venta desde DTO");
 
-            // Validaciones básicas usando nuestras nuevas utilidades
-            ValidationUtils.validarNoNulo(venta, "venta");
-            ValidationUtils.validarNoNulo(venta.cliente, "cliente");
-            ValidationUtils.validarNoNulo(venta.detalles, "detalles");
+            // Validaciones básicas
+            ValidationUtils.validarNoNulo(ventaDTO, "ventaDTO");
+            ValidationUtils.validarNoNulo(ventaDTO.clienteId, "clienteId");
+            ValidationUtils.validarNoNulo(ventaDTO.detalles, "detalles");
 
-            if (venta.detalles.isEmpty()) {
+            if (ventaDTO.detalles.isEmpty()) {
                 throw new VentaException("La venta debe tener al menos un producto", "VENTA_003");
             }
 
+            LOG.info("📋 Procesando " + ventaDTO.detalles.size() + " detalles desde DTO");
+
             // Validar cliente
-            Cliente cliente = clienteRepository.findById(venta.cliente.idCliente);
+            Cliente cliente = clienteRepository.findById(ventaDTO.clienteId);
             if (cliente == null) {
-                throw new ClienteException("Cliente no encontrado", venta.cliente.idCliente);
+                throw new ClienteException("Cliente no encontrado", ventaDTO.clienteId);
             }
 
-            // Validar que el cliente esté activo
-            if (!"S".equals(cliente.activo)) {
-                throw new ClienteException("Cliente inactivo", cliente.idCliente);
-            }
-
+            // Crear nueva venta
+            Venta venta = new Venta();
             venta.cliente = cliente;
+            venta.fechaVenta = java.time.LocalDateTime.now();
 
-            // Usar fecha actual si no viene
-            if (venta.fechaVenta == null) {
-                venta.fechaVenta = LocalDateTime.now();
+            // Generar folio si no viene
+            if (ventaDTO.folio == null || ventaDTO.folio.trim().isEmpty()) {
+                venta.folio = generarFolioVenta();
+            } else {
+                venta.folio = ventaDTO.folio;
             }
 
-            LOG.info("📋 Procesando " + venta.detalles.size() + " detalles de venta");
+            // ✅ PRIMERO: Validar todo el inventario
+            for (VentaCreateDTO.DetalleVentaCreateDTO detalleDTO : ventaDTO.detalles) {
+                ValidationUtils.validarNoNulo(detalleDTO.productoId, "productoId");
+                ValidationUtils.validarPositivo(detalleDTO.cantidad, "cantidad");
 
-            // ✅ PRIMERO: Validar todo el inventario ANTES de hacer cambios
-            for (DetalleVenta detalle : venta.detalles) {
-                ValidationUtils.validarNoNulo(detalle.producto, "producto en detalle");
-                ValidationUtils.validarPositivo(detalle.cantidad, "cantidad");
-
-                Producto producto = productoRepository.findById(detalle.producto.idProducto);
+                Producto producto = productoRepository.findById(detalleDTO.productoId);
                 if (producto == null) {
-                    throw new VentaException(
-                            "Producto no encontrado: " + detalle.producto.idProducto,
-                            "VENTA_004"
-                    );
+                    throw new VentaException("Producto no encontrado: " + detalleDTO.productoId, "VENTA_004");
                 }
-
-                // Usar nuestra nueva utilidad de validación de stock
-                BusinessRules.validarStockSuficiente(producto, detalle.cantidad);
-
-                // Validar precio
-                if (detalle.precioUnitario != null) {
-                    BusinessRules.validarPrecioPositivo(detalle.precioUnitario);
-                }
+                BusinessRules.validarStockSuficiente(producto, detalleDTO.cantidad);
             }
 
-            // ✅ SEGUNDO: Si toda la validación pasa, procesar la venta
-            for (DetalleVenta detalle : venta.detalles) {
-                Producto producto = productoRepository.findById(detalle.producto.idProducto);
-                detalle.producto = producto;
-                detalle.venta = venta; // ✅ Establecer relación bidireccional
+            // ✅ SEGUNDO: Crear detalles
+            for (VentaCreateDTO.DetalleVentaCreateDTO detalleDTO : ventaDTO.detalles) {
+                Producto producto = productoRepository.findById(detalleDTO.productoId);
 
-                // Usar precio del producto si no se especificó
-                if (detalle.precioUnitario == null) {
+                DetalleVenta detalle = new DetalleVenta();
+                detalle.venta = venta;
+                detalle.producto = producto;
+                detalle.cantidad = detalleDTO.cantidad;
+
+                // Usar precio del producto si no se especifica
+                if (detalleDTO.precioUnitario != null) {
+                    detalle.precioUnitario = detalleDTO.precioUnitario;
+                } else {
                     detalle.precioUnitario = producto.precioVenta;
                 }
 
-                // Calcular importe
-                detalle.importe = detalle.precioUnitario.multiply(BigDecimal.valueOf(detalle.cantidad));
+                detalle.importe = detalle.precioUnitario.multiply(java.math.BigDecimal.valueOf(detalle.cantidad));
 
-                // ✅ REDUCIR INVENTARIO (ya validado que hay stock suficiente)
+                // Reducir inventario
                 producto.existencia -= detalle.cantidad;
-                LOG.info("📦 Inventario actualizado - " + producto.nombre +
-                        ": " + (producto.existencia + detalle.cantidad) + " → " + producto.existencia);
+
+                venta.detalles.add(detalle);
             }
 
             // Calcular totales
             calcularTotales(venta);
-
-            // Generar folio automático si no viene
-            if (venta.folio == null || venta.folio.trim().isEmpty()) {
-                venta.folio = generarFolioVenta();
-            }
 
             // Validar folio único
             if (ventaRepository.findByFolio(venta.folio).isPresent()) {
                 throw new VentaException("El folio ya existe: " + venta.folio, "VENTA_005");
             }
 
-            LOG.info("💾 Persistiendo venta - Folio: " + venta.folio + ", Total: " + venta.total);
+            LOG.info("💾 Persistiendo venta - Folio: " + venta.folio);
             ventaRepository.persist(venta);
 
             LOG.info("✅ Venta creada exitosamente - ID: " + venta.idVenta + ", Folio: " + venta.folio);
             return venta;
 
         } catch (VentaException | InventarioException | ClienteException | ValidationException e) {
-            // Relanzar excepciones de negocio específicas
             LOG.severe("❌ Error de negocio en venta: " + e.getMessage());
             throw e;
         } catch (Exception e) {
-            // Capturar cualquier otra excepción y convertirla a VentaException
             LOG.severe("💥 Error inesperado al crear venta: " + e.getMessage());
             throw new VentaException("Error interno al procesar la venta: " + e.getMessage(), "VENTA_999");
         }

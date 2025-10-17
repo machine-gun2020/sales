@@ -1,5 +1,6 @@
 package com.prototipe.controller;
 
+import com.prototipe.dto.VentaCreateDTO;
 import com.prototipe.dto.VentaResponse;
 import com.prototipe.exceptions.*;
 import com.prototipe.model.Venta;
@@ -63,16 +64,23 @@ public class VentaResource {
     }
 
     @POST
-    public Response crearVenta(Venta venta) {
+    public Response crearVenta(VentaCreateDTO ventaDTO) {
         try {
-            LOG.info("🛒 Creando nueva venta");
-            Venta nuevaVenta = ventaService.crearVenta(venta);
+            LOG.info("🛒 Creando nueva venta desde DTO");
+            LOG.info("📋 Detalles en DTO: " + ventaDTO.detalles.size());
+
+            Venta nuevaVenta = ventaService.crearVenta(ventaDTO);
 
             LOG.info("✅ Venta creada exitosamente - ID: " + nuevaVenta.idVenta);
             return Response.status(Response.Status.CREATED)
                     .entity(crearSuccessResponse("Venta creada exitosamente", nuevaVenta))
                     .build();
 
+        } catch (VentaException e) {
+            LOG.warning("💰 Error de venta: " + e.getMessage());
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(crearErrorResponse(e.getMessage(), e.getCodigoError()))
+                    .build();
         } catch (InventarioException e) {
             LOG.warning("📦 Error de inventario: " + e.getMessage());
             return Response.status(Response.Status.BAD_REQUEST)
@@ -95,11 +103,6 @@ public class VentaResource {
                             "VALIDACION_001"
                     ))
                     .build();
-        } catch (VentaException e) {
-            LOG.warning("💰 Error de venta: " + e.getMessage());
-            return Response.status(Response.Status.BAD_REQUEST)
-                    .entity(crearErrorResponse(e.getMessage(), e.getCodigoError()))
-                    .build();
         } catch (Exception e) {
             LOG.severe("💥 Error inesperado al crear venta: " + e.getMessage());
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
@@ -107,7 +110,6 @@ public class VentaResource {
                     .build();
         }
     }
-
     @PUT
     @Path("/{id}/cancelar")
     public Response cancelarVenta(@PathParam("id") Long id) {
