@@ -47,4 +47,8 @@ public class DetalleVenta extends PanacheEntityBase {
 
     @Column(name = "ESTADO", length = 20)
     public String estado = "VENDIDO";
+
+    public Integer getCantidadDevuelta() {
+        return this.cantidadDevuelta != null ? this.cantidadDevuelta : 0;
+    }
 }
